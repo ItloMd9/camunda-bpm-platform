@@ -31,6 +31,7 @@ import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
+import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Date;
@@ -38,6 +39,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
+import org.apache.commons.lang.time.DateUtils;
 import org.apache.commons.lang3.exception.ExceptionUtils;
 import org.apache.ibatis.jdbc.RuntimeSqlException;
 import org.camunda.bpm.engine.BadUserRequestException;
@@ -634,16 +636,6 @@ public class ExternalTaskServiceTest extends PluggableProcessEngineTest {
     verifyVariables(task);
   }
 
-  private void verifyVariables(LockedExternalTask task) {
-    VariableMap variables = task.getVariables();
-    assertEquals(4, variables.size());
-
-    assertEquals(42, variables.get("processVar1"));
-    assertEquals(43, variables.get("processVar2"));
-    assertEquals(44L, variables.get("subProcessVar"));
-    assertEquals(45L, variables.get("taskVar"));
-  }
-
   @Deployment(resources = "org/camunda/bpm/engine/test/api/externaltask/oneExternalTaskProcess.bpmn20.xml")
   @Test
   public void testFetchNonExistingVariable() {
@@ -1066,6 +1058,65 @@ public class ExternalTaskServiceTest extends PluggableProcessEngineTest {
     assertEquals(1, externalTasks.size());
   }
 
+  @Deployment(resources = { "org/camunda/bpm/engine/test/api/externaltask/oneExternalTaskProcess.bpmn20.xml"})
+  @Test
+  public void shouldLockExternalTask() throws java.text.ParseException {
+    // given
+    runtimeService.startProcessInstanceByKey("oneExternalTaskProcess");
+    ExternalTask externalTask = externalTaskService.createExternalTaskQuery().notLocked().singleResult();
+
+    // when
+    externalTaskService.lock(externalTask.getId(), WORKER_ID, LOCK_TIME);
+
+    // then
+    List<ExternalTask> lockedExternalTasks = externalTaskService.createExternalTaskQuery().locked().list();
+    assertThat(lockedExternalTasks).hasSize(1);
+
+    //get rid of the milliseconds because of MySQL datetime precision
+    SimpleDateFormat formatter = new SimpleDateFormat("dd.MM.yyyy - HH:mm:ss");
+    Date lockExpirationTime = formatter.parse(
+        formatter.format(DateUtils.addMilliseconds(ClockUtil.getCurrentTime(), (int) LOCK_TIME)));
+
+    ExternalTask lockedExternalTask = lockedExternalTasks.get(0);
+    assertThat(lockedExternalTask.getWorkerId()).isEqualToIgnoringCase(WORKER_ID);
+    assertThat(lockedExternalTask.getLockExpirationTime())
+        .isEqualTo(lockExpirationTime);
+  }
+
+  @Deployment(resources = { "org/camunda/bpm/engine/test/api/externaltask/oneExternalTaskProcess.bpmn20.xml"})
+  @Test
+  public void shouldFailToLockAlreadyLockedExternalTask() {
+    // given
+    String aSecondWorkerId = "aSecondWorkerId";
+    runtimeService.startProcessInstanceByKey("oneExternalTaskProcess");
+    ExternalTask externalTask = externalTaskService.createExternalTaskQuery().notLocked().singleResult();
+    externalTaskService.lock(externalTask.getId(), WORKER_ID, LOCK_TIME);
+
+    // then
+    thrown.expect(BadUserRequestException.class);
+    thrown.expectMessage("External Task " + externalTask.getId()
+        + " cannot be locked by worker '" + aSecondWorkerId
+        + "'. It is locked by worker '" + WORKER_ID + "'.");
+
+    // when
+    externalTaskService.lock(externalTask.getId(), aSecondWorkerId, LOCK_TIME);
+  }
+
+  @Deployment(resources = { "org/camunda/bpm/engine/test/api/externaltask/oneExternalTaskProcess.bpmn20.xml"})
+  @Test
+  public void shouldReportMissingWorkerIdOnLockExternalTask() {
+    // given
+    runtimeService.startProcessInstanceByKey("oneExternalTaskProcess");
+    ExternalTask externalTask = externalTaskService.createExternalTaskQuery().notLocked().singleResult();
+
+    // then
+    thrown.expect(NullValueException.class);
+    thrown.expectMessage("workerId is null");
+
+    // when
+    externalTaskService.lock(externalTask.getId(), null, LOCK_TIME);
+  }
+
   @Deployment(resources = "org/camunda/bpm/engine/test/api/externaltask/twoExternalTaskProcess.bpmn20.xml")
   @Test
   public void testComplete() {
@@ -1091,7 +1142,6 @@ public class ExternalTaskServiceTest extends PluggableProcessEngineTest {
           .activity("afterExternalTask")
         .done());
   }
-
 
   @Deployment(resources = "org/camunda/bpm/engine/test/api/externaltask/twoExternalTaskProcess.bpmn20.xml")
   @Test
@@ -3470,6 +3520,16 @@ public class ExternalTaskServiceTest extends PluggableProcessEngineTest {
       ids.add(runtimeService.startProcessInstanceByKey(key, String.valueOf(i)).getId());
     }
     return ids;
+  }
+
+  protected void verifyVariables(LockedExternalTask task) {
+    VariableMap variables = task.getVariables();
+    assertEquals(4, variables.size());
+
+    assertEquals(42, variables.get("processVar1"));
+    assertEquals(43, variables.get("processVar2"));
+    assertEquals(44L, variables.get("subProcessVar"));
+    assertEquals(45L, variables.get("taskVar"));
   }
 
   protected List<HistoricExternalTaskLog> getHistoricTaskLogOrdered(String taskId) {
