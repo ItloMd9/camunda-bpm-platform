@@ -47,7 +47,7 @@ public class CompetingExternalTaskLockingTest extends ConcurrencyTestCase {
 
   @Deployment(resources = { "org/camunda/bpm/engine/test/api/externaltask/oneExternalTaskProcess.bpmn20.xml"})
   @Test
-  public void shouldThrowOleOnConcurrentLockingAttempt() {
+  public void shouldThrowOleOnConcurrentLockingAttempt() throws InterruptedException {
     // given
     runtimeService.startProcessInstanceByKey("oneExternalTaskProcess");
     String externalTaskId = externalTaskService.createExternalTaskQuery()
@@ -68,19 +68,22 @@ public class CompetingExternalTaskLockingTest extends ConcurrencyTestCase {
     lockThread2.waitForSync();
 
     // TX1: lock external task and wait to flush
-    lockThread1.makeContinueAndWaitForSync();
+    lockThread1.makeContinue();
+    lockThread1.waitForSync();
 
     // TX2: lock external task and wait to flush
     lockThread2.makeContinue();
 
+    // introduce a delay to avoid race conditions between the threads
+    Thread.sleep(2000);
+
     // TX1: flush & commit
-    lockThread1.makeContinue();
     lockThread1.waitUntilDone();
 
     // when
     // TX2: attempt to flush
     lockThread2.waitForSync();
-    lockThread2.makeContinue();
+    lockThread2.waitUntilDone();
 
     // then
     ExternalTask lockedExternalTask = externalTaskService.createExternalTaskQuery().locked().singleResult();
